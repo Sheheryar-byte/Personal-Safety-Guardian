@@ -2,21 +2,17 @@ services:
   - type: web
     name: ai-safety-guardian-backend
     env: node
+    rootDir: backend
     buildCommand: npm install
     startCommand: node server.js
     envVars:
       - key: API_KEY
-        value: AIZaSyC9E... 
-        sync: false
-
+        sync: false        # remove value line
       - key: PORT
         value: 8080
-
       - key: NODE_ENV
         value: production
-
       - key: FRONTEND_URL
-        value: http://localhost:3000
-        sync: false
+        sync: false        # remove value line
 
 
