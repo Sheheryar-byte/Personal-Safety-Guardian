@@ -29,12 +29,25 @@ const analyzeText = async (req, res) => {
     res.json(result);
   } catch (error) {
     console.error('Text analysis error:', error);
+    const errorMessage = error.message || 'Unknown error';
+    const isOverloaded = errorMessage.includes('overloaded') || errorMessage.includes('503');
+    const isRateLimited = errorMessage.includes('rate limit') || errorMessage.includes('429');
+    
     res.status(500).json({
       threat_level: 'unknown',
-      detected_risks: ['Analysis failed'],
-      recommended_actions: ['Please try again'],
+      detected_risks: isOverloaded 
+        ? ['AI service is currently overloaded'] 
+        : isRateLimited 
+        ? ['API rate limit reached']
+        : ['Analysis service temporarily unavailable'],
+      recommended_actions: isOverloaded || isRateLimited
+        ? ['Please wait a few moments and try again', 'The service should be available shortly']
+        : ['Please try again in a moment'],
       confidence: 0,
-      extra_info: { error: error.message }
+      extra_info: { 
+        error: errorMessage,
+        retry_after: isOverloaded || isRateLimited ? '30-60 seconds' : undefined
+      }
     });
   }
 };

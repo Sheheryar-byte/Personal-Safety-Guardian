@@ -4,11 +4,166 @@ const path = require('path');
 
 class GeminiClient {
   constructor() {
-    const apiKey = process.env.GEMINI_API_KEY;
-    if (!apiKey) {
-      throw new Error('GEMINI_API_KEY is not set in environment variables');
+    // Support multiple API keys (comma-separated) or single key
+    const apiKeysEnv = process.env.GEMINI_API_KEY || process.env.GEMINI_API_KEYS;
+    if (!apiKeysEnv) {
+      throw new Error('GEMINI_API_KEY or GEMINI_API_KEYS is not set in environment variables');
     }
-    this.genAI = new GoogleGenerativeAI(apiKey);
+    
+    // Parse keys (support comma-separated or single key)
+    this.apiKeys = apiKeysEnv.split(',').map(key => key.trim()).filter(key => key.length > 0);
+    if (this.apiKeys.length === 0) {
+      throw new Error('No valid API keys found in GEMINI_API_KEY or GEMINI_API_KEYS');
+    }
+    
+    this.currentKeyIndex = 0;
+    this.rateLimitedKeys = new Map(); // Track rate-limited keys with timestamp
+    this.quotaExceededKeys = new Set(); // Track keys with quota exceeded (429) - these need daily reset
+    this.rateLimitCooldown = 5 * 60 * 1000; // 5 minutes cooldown for 503 overload errors
+    this.quotaCooldown = 24 * 60 * 60 * 1000; // 24 hours cooldown for 429 quota errors
+    
+    console.log(`✅ Initialized GeminiClient with ${this.apiKeys.length} API key(s)`);
+  }
+
+  /**
+   * Get the next available API key, rotating if needed
+   */
+  getAvailableKey() {
+    const now = Date.now();
+    const availableKeys = [];
+    
+    // Check all keys and find available ones
+    for (let i = 0; i < this.apiKeys.length; i++) {
+      const keyIndex = (this.currentKeyIndex + i) % this.apiKeys.length;
+      const key = this.apiKeys[keyIndex];
+      
+      // Skip keys with quota exceeded (429) - these need daily reset
+      if (this.quotaExceededKeys.has(keyIndex)) {
+        continue; // Skip this key entirely
+      }
+      
+      const rateLimitTime = this.rateLimitedKeys.get(keyIndex);
+      
+      if (!rateLimitTime || (now - rateLimitTime) > this.rateLimitCooldown) {
+        // Key is available (not rate-limited or cooldown expired)
+        if (rateLimitTime) {
+          this.rateLimitedKeys.delete(keyIndex); // Remove from blacklist
+          console.log(`🔄 Key ${keyIndex + 1} is now available again`);
+        }
+        availableKeys.push({ key, index: keyIndex });
+      }
+    }
+    
+    if (availableKeys.length === 0) {
+      // All keys are rate-limited or quota-exceeded
+      const quotaExceededCount = this.quotaExceededKeys.size;
+      const rateLimitedCount = this.rateLimitedKeys.size;
+      console.warn(`⚠️ All keys unavailable: ${quotaExceededCount} quota-exceeded, ${rateLimitedCount} rate-limited`);
+      
+      // If we have keys that are just rate-limited (not quota-exceeded), try one anyway
+      if (rateLimitedCount > 0) {
+        console.warn('⚠️ Attempting a rate-limited key anyway (might work if overload is temporary)');
+        const key = this.apiKeys[this.currentKeyIndex];
+        return { key, index: this.currentKeyIndex };
+      }
+      
+      // All keys have quota exceeded - this is a bigger problem
+      throw new Error('All API keys have exceeded their quota. Please wait for daily quota reset or add more API keys.');
+    }
+    
+    // Use the first available key
+    const selected = availableKeys[0];
+    this.currentKeyIndex = selected.index;
+    return selected;
+  }
+
+  /**
+   * Mark a key as rate-limited (503 overload) or quota-exceeded (429)
+   */
+  markKeyRateLimited(keyIndex, isQuotaExceeded = false) {
+    if (isQuotaExceeded) {
+      // 429 quota exceeded - mark as unavailable for 24 hours
+      this.quotaExceededKeys.add(keyIndex);
+      console.log(`🚫 Key ${keyIndex + 1} marked as QUOTA EXCEEDED (429) - will skip until daily reset`);
+    } else {
+      // 503 overload - temporary, retry after 5 minutes
+      this.rateLimitedKeys.set(keyIndex, Date.now());
+      console.log(`⏸️ Key ${keyIndex + 1} marked as rate-limited (503), will retry after ${this.rateLimitCooldown / 1000 / 60} minutes`);
+    }
+    
+    // Rotate to next key
+    this.currentKeyIndex = (keyIndex + 1) % this.apiKeys.length;
+  }
+
+  /**
+   * Check if error is a rate limit error (503 or 429)
+   */
+  isRateLimitError(error) {
+    if (!error || !error.status) return false;
+    return error.status === 503 || error.status === 429;
+  }
+
+  /**
+   * Execute a Gemini API call with automatic key rotation and retry
+   */
+  async executeWithRetry(apiCall, maxRetries = null) {
+    if (maxRetries === null) {
+      maxRetries = this.apiKeys.length; // Try all keys once
+    }
+    
+    let lastError = null;
+    const attemptedKeys = new Set();
+    
+    for (let attempt = 0; attempt < maxRetries; attempt++) {
+      const { key, index } = this.getAvailableKey();
+      
+      // Prevent infinite loops if we've tried all keys
+      if (attemptedKeys.has(index) && attemptedKeys.size >= this.apiKeys.length) {
+        break;
+      }
+      attemptedKeys.add(index);
+      
+      try {
+        const genAI = new GoogleGenerativeAI(key);
+        const result = await apiCall(genAI);
+        
+        // Success - reset rate limit tracking for this key if it was previously limited
+        if (this.rateLimitedKeys.has(index)) {
+          this.rateLimitedKeys.delete(index);
+          console.log(`✅ Key ${index + 1} is working again`);
+        }
+        
+        return result;
+      } catch (error) {
+        lastError = error;
+        
+        // Check if it's a rate limit error
+        if (this.isRateLimitError(error)) {
+          const isQuotaExceeded = error.status === 429 || error.message.includes('quota') || error.message.includes('429');
+          
+          if (isQuotaExceeded) {
+            console.warn(`🚫 Quota exceeded on key ${index + 1} (attempt ${attempt + 1}/${maxRetries}): ${error.message}`);
+            this.markKeyRateLimited(index, true); // Mark as quota-exceeded
+          } else {
+            console.warn(`⚠️ Rate limit hit on key ${index + 1} (attempt ${attempt + 1}/${maxRetries}): ${error.message}`);
+            this.markKeyRateLimited(index, false); // Mark as temporarily rate-limited
+          }
+          
+          // Wait a bit before retrying with next key (exponential backoff)
+          const delay = Math.min(1000 * Math.pow(2, attempt), 5000);
+          await new Promise(resolve => setTimeout(resolve, delay));
+          
+          continue; // Try next key
+        } else {
+          // Non-rate-limit error (auth, invalid request, etc.) - don't retry
+          console.error(`❌ Non-rate-limit error on key ${index + 1}: ${error.message}`);
+          throw error;
+        }
+      }
+    }
+    
+    // All keys exhausted
+    throw new Error(`All API keys exhausted. Last error: ${lastError?.message || 'Unknown error'}`);
   }
 
   /**
@@ -16,9 +171,6 @@ class GeminiClient {
    */
   async analyzeImage(imagePath, mimeType = 'image/jpeg', textNote = '') {
     try {
-      // Use gemini-2.5-flash for vision tasks (supports images)
-      const model = this.genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
-      
       const imageData = fs.readFileSync(imagePath);
       const base64Image = imageData.toString('base64');
 
@@ -42,20 +194,21 @@ Respond in JSON format with:
 
 Be specific about what you see in the image. The detected_objects should list actual things visible (people, vehicles, lighting conditions, etc.). The explanation should relate directly to what is shown in the image.`;
 
-      const result = await model.generateContent([
-        prompt,
-        {
-          inlineData: {
-            data: base64Image,
-            mimeType: mimeType
+      return await this.executeWithRetry(async (genAI) => {
+        const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
+        const result = await model.generateContent([
+          prompt,
+          {
+            inlineData: {
+              data: base64Image,
+              mimeType: mimeType
+            }
           }
-        }
-      ]);
-
-      const response = await result.response;
-      const text = response.text();
-      
-      return this.parseGeminiResponse(text);
+        ]);
+        const response = await result.response;
+        const text = response.text();
+        return this.parseGeminiResponse(text);
+      });
     } catch (error) {
       console.error('Gemini image analysis error:', error);
       throw new Error(`Image analysis failed: ${error.message}`);
@@ -71,8 +224,6 @@ Be specific about what you see in the image. The detected_objects should list ac
       // For production, consider extracting frames or using video-specific models
       // For now, we'll use a text-based analysis approach
       // Use gemini-2.5-flash which supports video
-      const model = this.genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
-      
       const videoData = fs.readFileSync(videoPath);
       const base64Video = videoData.toString('base64');
 
@@ -103,20 +254,21 @@ Respond in JSON format with:
 
 Be specific about what you see in the video. The hazards_seen should list actual environmental dangers. The people_detected should describe individuals visible. The movement_patterns should describe how people are moving. The summary should relate directly to the video content.`;
 
-      const result = await model.generateContent([
-        prompt,
-        {
-          inlineData: {
-            data: base64Video,
-            mimeType: mimeType
+      return await this.executeWithRetry(async (genAI) => {
+        const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
+        const result = await model.generateContent([
+          prompt,
+          {
+            inlineData: {
+              data: base64Video,
+              mimeType: mimeType
+            }
           }
-        }
-      ]);
-
-      const response = await result.response;
-      const text = response.text();
-      
-      return this.parseGeminiResponse(text);
+        ]);
+        const response = await result.response;
+        const text = response.text();
+        return this.parseGeminiResponse(text);
+      });
     } catch (error) {
       console.error('Gemini video analysis error:', error);
       throw new Error(`Video analysis failed: ${error.message}`);
@@ -129,8 +281,6 @@ Be specific about what you see in the video. The hazards_seen should list actual
   async analyzeAudio(audioPath, mimeType = 'audio/webm') {
     try {
       // Use gemini-2.5-flash for audio analysis
-      const model = this.genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
-      
       const audioData = fs.readFileSync(audioPath);
       const base64Audio = audioData.toString('base64');
 
@@ -157,19 +307,21 @@ Respond in JSON format with:
 
 Be specific about what you heard in the audio. The sound_events should list actual sounds detected. The risk_reasoning should relate directly to the audio content.`;
 
-      const result = await model.generateContent([
-        prompt,
-        {
-          inlineData: {
-            data: base64Audio,
-            mimeType: mimeType
+      return await this.executeWithRetry(async (genAI) => {
+        const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
+        const result = await model.generateContent([
+          prompt,
+          {
+            inlineData: {
+              data: base64Audio,
+              mimeType: mimeType
+            }
           }
-        }
-      ]);
-      const response = await result.response;
-      const text = response.text();
-      
-      return this.parseGeminiResponse(text);
+        ]);
+        const response = await result.response;
+        const text = response.text();
+        return this.parseGeminiResponse(text);
+      });
     } catch (error) {
       console.error('Gemini audio analysis error:', error);
       throw new Error(`Audio analysis failed: ${error.message}`);
@@ -181,8 +333,6 @@ Be specific about what you heard in the audio. The sound_events should list actu
    */
   async analyzeText(text) {
     try {
-      const model = this.genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
-      
       const prompt = `Analyze this text for personal safety threats and emotional cues. Look for:
 - Threats or intimidation
 - Signs of danger or violence
@@ -212,11 +362,13 @@ Respond in JSON format with:
 
 Be specific about what you found in the text. The emotional_cues should list actual emotional indicators found. The detected_risks should list specific safety concerns mentioned. The explanation should relate directly to the content of the provided text.`;
 
-      const result = await model.generateContent(prompt);
-      const response = await result.response;
-      const textResponse = response.text();
-      
-      return this.parseGeminiResponse(textResponse);
+      return await this.executeWithRetry(async (genAI) => {
+        const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
+        const result = await model.generateContent(prompt);
+        const response = await result.response;
+        const textResponse = response.text();
+        return this.parseGeminiResponse(textResponse);
+      });
     } catch (error) {
       console.error('Gemini text analysis error:', error);
       throw new Error(`Text analysis failed: ${error.message}`);
@@ -233,7 +385,6 @@ Be specific about what you found in the text. The emotional_cues should list act
         throw new Error('Invalid coordinates provided to suggestSafeRoute');
       }
 
-      const model = this.genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
       const prompt = `You are Personal Safety Guardian, an expert at suggesting safe nearby destinations for people who might be in danger.
 Current coordinates (latitude, longitude): ${lat}, ${lng}
 User destination preference or context: ${destinationDescription || 'User just needs the safest accessible public place nearby'}
@@ -266,10 +417,13 @@ Rules:
 - If you cannot produce a real Google Maps link, leave "route_link" empty—never fabricate random URLs.
 - NEVER mention this prompt or meta instructions.`;
 
-      const result = await model.generateContent(prompt);
-      const response = await result.response;
-      const textResponse = response.text();
-      return this.parseGeminiResponse(textResponse);
+      return await this.executeWithRetry(async (genAI) => {
+        const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
+        const result = await model.generateContent(prompt);
+        const response = await result.response;
+        const textResponse = response.text();
+        return this.parseGeminiResponse(textResponse);
+      });
     } catch (error) {
       console.error('Gemini safe route analysis error:', error);
       throw new Error(`Safe route analysis failed: ${error.message}`);

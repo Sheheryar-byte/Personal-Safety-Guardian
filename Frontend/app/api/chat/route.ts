@@ -33,12 +33,23 @@ export async function POST(request: NextRequest) {
         body: JSON.stringify({ text: message.trim() }),
       });
 
-      if (!backendResponse.ok) {
-        const errorData = await backendResponse.json().catch(() => ({}));
-        throw new Error(errorData.error || 'Backend request failed');
-      }
-
       const backendData = await backendResponse.json();
+      
+      // Handle backend errors gracefully - still return a response to the user
+      if (!backendResponse.ok) {
+        const errorMessage = backendData.extra_info?.error || backendData.detected_risks?.[0] || 'Service temporarily unavailable';
+        const isOverloaded = errorMessage.includes('overloaded') || errorMessage.includes('503');
+        
+        return NextResponse.json({
+          response: isOverloaded 
+            ? '⚠️ The AI service is currently experiencing high demand. Please try again in a few moments.'
+            : `⚠️ ${errorMessage}. Please try again.`,
+          threat_level: backendData.threat_level || 'unknown' as const,
+          detected_risks: backendData.detected_risks || ['Service error'],
+          recommended_actions: backendData.recommended_actions || ['Please try again in a moment'],
+          explanation: errorMessage
+        });
+      }
 
       // Extract data from backend response (from Gemini API)
       const threatLevel = (backendData.threat_level || 'low').toLowerCase() as 'low' | 'medium' | 'high' | 'critical';

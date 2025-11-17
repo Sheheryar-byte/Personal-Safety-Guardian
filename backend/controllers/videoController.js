@@ -87,7 +87,31 @@ const analyzeVideo = async (req, res) => {
           });
         }
 
-        throw analysisError;
+        // Handle error gracefully instead of throwing
+        const errorMessage = analysisError.message || 'Unknown error';
+        const isOverloaded = errorMessage.includes('overloaded') || errorMessage.includes('503');
+        const isRateLimited = errorMessage.includes('rate limit') || errorMessage.includes('429');
+        const isExhausted = errorMessage.includes('exhausted');
+
+        console.error('Video analysis error:', errorMessage);
+        return res.status(500).json({
+          threat_level: 'unknown',
+          detected_risks: isOverloaded 
+            ? ['AI service is currently overloaded'] 
+            : isRateLimited 
+            ? ['API rate limit reached']
+            : isExhausted
+            ? ['All API keys exhausted - service temporarily unavailable']
+            : ['Video analysis service temporarily unavailable'],
+          recommended_actions: isOverloaded || isRateLimited || isExhausted
+            ? ['Please wait a few moments and try again', 'The service should be available shortly']
+            : ['Please try again in a moment'],
+          confidence: 0,
+          extra_info: { 
+            error: errorMessage,
+            retry_after: (isOverloaded || isRateLimited || isExhausted) ? '30-60 seconds' : undefined
+          }
+        });
       }
     });
   } catch (error) {
