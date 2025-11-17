@@ -5,119 +5,264 @@
 The `backend/utils/geminiClient.js` has been updated to support:
 - **Multiple API keys** (comma-separated)
 - **Automatic key rotation** when rate limits (503/429) are hit
+- **Smart error handling** - Differentiates between:
+  - **429 Quota Exceeded**: Skips key for 24 hours (daily reset)
+  - **503 Overloaded**: Retries after 5 minutes (temporary)
 - **Retry logic** with exponential backoff
-- **Key health tracking** (temporary blacklist for rate-limited keys with 5-minute cooldown)
+- **Key health tracking** with separate handling for quota vs overload errors
 
 All analysis methods (image, video, audio, text, safe route) now automatically use the retry mechanism.
 
 ---
 
-## 🔧 Railway Backend Configuration
+## 🚂 Railway Backend Deployment
 
-### Step 1: Update Environment Variable
+### Step 1: Push Code Changes to Git
 
-In your Railway dashboard:
+First, commit and push your code changes:
 
-1. Go to your backend service → **Variables** tab
-2. **Delete** the existing `GEMINI_API_KEY` variable (if it exists)
-3. **Add a new variable** with:
-   - **Key**: `GEMINI_API_KEY`
-   - **Value**: All 6 keys separated by commas (no spaces, or with spaces - both work):
-     ```
-     AIzaSyDstaFyeUm6hOh_0bx_iT_jlT0UpuYTMu4,AIzaSyCT5fPV3hHMLXOSK3EqFOr6RPbVcZKPiDw,AIzaSyA1tX5zgvby7dthDdxHMuiScImKG6bIYEw,AIzaSyDqkbW3HaVq5XutJ6wr28KOPVz0REen5Jk,AIzaSyBNzL0yojFx8Y-ryU7uS3pVx54ZcFfPaYE,AIzaSyC8sjwqfkuR1icB1XqOnywS5AvEhsKlOVY
-     ```
+```bash
+git add .
+git commit -m "Add multiple API key support with smart quota handling"
+git push origin main
+```
 
-   **OR** (with spaces after commas for readability):
-   ```
-   AIzaSyDstaFyeUm6hOh_0bx_iT_jlT0UpuYTMu4, AIzaSyCT5fPV3hHMLXOSK3EqFOr6RPbVcZKPiDw, AIzaSyA1tX5zgvby7dthDdxHMuiScImKG6bIYEw, AIzaSyDqkbW3HaVq5XutJ6wr28KOPVz0REen5Jk, AIzaSyBNzL0yojFx8Y-ryU7uS3pVx54ZcFfPaYE, AIzaSyC8sjwqfkuR1icB1XqOnywS5AvEhsKlOVY
-   ```
+Railway will automatically detect the push and redeploy.
 
-4. **Keep other variables** as they were:
-   - `PORT=8080` (or Railway's auto-assigned port)
-   - `NODE_ENV=production`
-   - `FRONTEND_URL=https://personal-safety-guardian.vercel.app`
+### Step 2: Update Environment Variable in Railway
 
-### Step 2: Redeploy
+1. Go to [Railway Dashboard](https://railway.app)
+2. Select your **backend service**
+3. Click on the **Variables** tab
+4. Find the `GEMINI_API_KEY` variable
+5. **Edit** it (or delete and recreate if needed)
+6. **Paste all 6 keys separated by commas** (no spaces needed):
 
-After updating the environment variable:
-- Railway will automatically redeploy, OR
-- Click **"Redeploy"** in the Railway dashboard
+```
+AIzaSyDstaFyeUm6hOh_0bx_iT_jlT0UpuYTMu4,AIzaSyCT5fPV3hHMLXOSK3EqFOr6RPbVcZKPiDw,AIzaSyA1tX5zgvby7dthDdxHMuiScImKG6bIYEw,AIzaSyDqkbW3HaVq5XutJ6wr28KOPVz0REen5Jk,AIzaSyBNzL0yojFx8Y-ryU7uS3pVx54ZcFfPaYE,AIzaSyC8sjwqfkuR1icB1XqOnywS5AvEhsKlOVY
+```
 
-### Step 3: Verify
+**OR** (with spaces after commas for readability - both work):
 
-Check the Railway logs. You should see:
+```
+AIzaSyDstaFyeUm6hOh_0bx_iT_jlT0UpuYTMu4, AIzaSyCT5fPV3hHMLXOSK3EqFOr6RPbVcZKPiDw, AIzaSyA1tX5zgvby7dthDdxHMuiScImKG6bIYEw, AIzaSyDqkbW3HaVq5XutJ6wr28KOPVz0REen5Jk, AIzaSyBNzL0yojFx8Y-ryU7uS3pVx54ZcFfPaYE, AIzaSyC8sjwqfkuR1icB1XqOnywS5AvEhsKlOVY
+```
+
+7. **Save** the variable
+
+### Step 3: Verify Other Environment Variables
+
+Make sure these variables are set in Railway:
+- `PORT` - Usually auto-set by Railway (or `8080`)
+- `NODE_ENV=production`
+- `FRONTEND_URL` - Your Vercel frontend URL (e.g., `https://your-app.vercel.app`)
+
+### Step 4: Redeploy (if needed)
+
+Railway should automatically redeploy when you:
+- Push code to Git (if connected)
+- Update environment variables
+
+If not, click **"Redeploy"** in the Railway dashboard.
+
+### Step 5: Verify Deployment
+
+Check Railway logs. You should see:
 ```
 ✅ Initialized GeminiClient with 6 API key(s)
+🚀 Server running on port 8080
 ```
 
-When a rate limit is hit, you'll see:
+When errors occur, you'll see smart handling:
 ```
-⚠️ Rate limit hit on key 1 (attempt 1/6): [503 Service Unavailable]...
-⏸️ Key 1 marked as rate-limited, will retry after cooldown
-```
-
-Then it will automatically try the next key.
-
----
-
-## 🌐 Vercel Frontend Configuration
-
-**No changes needed!** This is a backend-only change. Your frontend doesn't need any updates.
-
-Just make sure your `NEXT_PUBLIC_API_BASE_URL` in Vercel points to your Railway backend:
-```
-https://psg1-production.up.railway.app
+🚫 Key 1 marked as QUOTA EXCEEDED (429) - will skip until daily reset
+⏸️ Key 5 marked as rate-limited (503), will retry after 5 minutes
 ```
 
 ---
 
-## 🧪 Testing
+## ▲ Vercel Frontend Deployment
 
-1. **Test with a single request** - should work normally
-2. **Test with rapid requests** - when one key hits rate limit, it should automatically switch to the next
-3. **Check Railway logs** - you'll see key rotation messages
+### Important: Frontend Does NOT Need API Keys
+
+The frontend **does not use Gemini API keys directly**. It only needs:
+- `NEXT_PUBLIC_API_BASE_URL` - Points to your Railway backend
+
+### Step 1: Push Code Changes to Git
+
+```bash
+cd Frontend
+git add .
+git commit -m "Update error handling for backend API"
+git push origin main
+```
+
+Vercel will automatically detect and redeploy.
+
+### Step 2: Verify Environment Variables in Vercel
+
+1. Go to [Vercel Dashboard](https://vercel.com)
+2. Select your **frontend project**
+3. Go to **Settings** → **Environment Variables**
+4. Check that `NEXT_PUBLIC_API_BASE_URL` is set to your Railway backend URL:
+   ```
+   https://your-backend-name.up.railway.app
+   ```
+   Or whatever your Railway backend URL is.
+
+### Step 3: Remove Gemini API Key (if present)
+
+If you previously added a `GEMINI_API_KEY` in Vercel:
+1. **Delete it** - The frontend doesn't need it
+2. The backend handles all Gemini API calls
+
+### Step 4: Redeploy (if needed)
+
+Vercel should auto-deploy on Git push. If not:
+1. Go to **Deployments** tab
+2. Click **"Redeploy"** on the latest deployment
+
+---
+
+## 🧪 Testing After Deployment
+
+### Test Backend (Railway)
+
+1. Check Railway logs for initialization:
+   ```
+   ✅ Initialized GeminiClient with 6 API key(s)
+   ```
+
+2. Test the health endpoint:
+   ```bash
+   curl https://your-backend.up.railway.app/api/health
+   ```
+   Should return: `{"status":"ok","message":"AI Personal Safety Guardian API is running"}`
+
+3. Test with a text analysis request (watch logs for key rotation)
+
+### Test Frontend (Vercel)
+
+1. Visit your Vercel URL
+2. Try sending a message in the chat
+3. Try uploading an image
+4. Check that errors are handled gracefully (no crashes)
 
 ---
 
 ## 📝 How It Works
 
+### Key Rotation Logic
+
 1. **Initialization**: All 6 keys are loaded at startup
 2. **Request**: Uses the current key (rotates round-robin)
-3. **Rate Limit Hit (503/429)**: 
-   - Current key is marked as rate-limited
+3. **429 Quota Exceeded**: 
+   - Key is marked as quota-exceeded
+   - **Skipped for 24 hours** (until daily reset)
    - Automatically switches to next available key
-   - Retries the request
-4. **Cooldown**: Rate-limited keys are blacklisted for 5 minutes, then automatically re-enabled
+4. **503 Overloaded**: 
+   - Key is marked as temporarily rate-limited
+   - **Retries after 5 minutes**
+   - Automatically switches to next available key
 5. **Success**: If a key works, it's used for subsequent requests
+
+### Error Handling
+
+- **429 errors**: Keys are skipped entirely until daily quota reset
+- **503 errors**: Keys are retried after 5-minute cooldown
+- **Other errors**: Logged but don't trigger key rotation
 
 ---
 
 ## 🔍 Monitoring
 
-Watch Railway logs for:
+### Railway Logs - What to Look For
+
+**Good signs:**
+- `✅ Initialized GeminiClient with 6 API key(s)` - All keys loaded
 - `✅ Key X is working again` - A previously rate-limited key recovered
 - `🔄 Key X is now available again` - Cooldown expired
-- `⚠️ Rate limit hit on key X` - Automatic rotation happening
-- `❌ Non-rate-limit error on key X` - Auth or other error (won't retry)
+
+**Expected behavior:**
+- `🚫 Key X marked as QUOTA EXCEEDED (429)` - Will skip for 24 hours
+- `⏸️ Key X marked as rate-limited (503)` - Will retry in 5 minutes
+- `⚠️ All keys unavailable: X quota-exceeded, Y rate-limited` - System is handling overload
+
+**Problems:**
+- `❌ Non-rate-limit error on key X` - Auth or invalid request (check API key)
+- `All API keys have exceeded their quota` - Need more keys or wait for reset
 
 ---
 
 ## ⚠️ Important Notes
 
-- **Security**: Never commit API keys to Git. Always use environment variables.
-- **Quota**: Each key still has its own quota. This system helps distribute load but doesn't increase total quota.
-- **Cooldown**: Rate-limited keys are blacklisted for 5 minutes. Adjust `rateLimitCooldown` in `geminiClient.js` if needed.
+### Security
+- **Never commit API keys to Git** - Always use environment variables
+- **Railway**: API keys are encrypted at rest
+- **Vercel**: Only needs backend URL, not API keys
+
+### Quota Management
+- Each key has its own quota (usually 15 req/min, 1500/day for free tier)
+- This system helps distribute load but doesn't increase total quota
+- **429 errors** mean the key's daily quota is exhausted
+- **503 errors** are temporary server overload (retry works)
+
+### Cooldown Times
+- **503 Overload**: 5 minutes (adjustable in `geminiClient.js`)
+- **429 Quota**: 24 hours (until daily reset, usually midnight Pacific)
+
+### Adding More Keys
+To add more keys in the future:
+1. Add them to Railway `GEMINI_API_KEY` variable (comma-separated)
+2. Redeploy backend
+3. No frontend changes needed
 
 ---
 
-## 🚀 Quick Command Reference
+## 🚀 Quick Reference
 
-If using Railway CLI to set the variable:
+### Railway Backend
+- **Dashboard**: https://railway.app
+- **Variable to update**: `GEMINI_API_KEY`
+- **Format**: `key1,key2,key3,key4,key5,key6` (comma-separated)
+- **Auto-redeploy**: Yes (on env var change or Git push)
 
-```bash
-# Note: Railway CLI doesn't support setting variables directly
-# Use the dashboard instead, or use Railway's API
+### Vercel Frontend
+- **Dashboard**: https://vercel.com
+- **Variable needed**: `NEXT_PUBLIC_API_BASE_URL` (Railway backend URL)
+- **API keys needed**: None (frontend doesn't use Gemini directly)
+- **Auto-redeploy**: Yes (on Git push)
+
+### Your Current Keys
+```
+1. AIzaSyDstaFyeUm6hOh_0bx_iT_jlT0UpuYTMu4
+2. AIzaSyCT5fPV3hHMLXOSK3EqFOr6RPbVcZKPiDw
+3. AIzaSyA1tX5zgvby7dthDdxHMuiScImKG6bIYEw
+4. AIzaSyDqkbW3HaVq5XutJ6wr28KOPVz0REen5Jk
+5. AIzaSyBNzL0yojFx8Y-ryU7uS3pVx54ZcFfPaYE
+6. AIzaSyC8sjwqfkuR1icB1XqOnywS5AvEhsKlOVY
 ```
 
-**Use the Railway Dashboard** (easiest method) to update the `GEMINI_API_KEY` variable.
+---
 
+## 🆘 Troubleshooting
+
+### Backend shows "1 API key(s)" instead of 6
+- Check Railway environment variable is set correctly
+- Make sure keys are comma-separated (no line breaks)
+- Redeploy after updating variable
+
+### All keys showing quota exceeded
+- Wait for daily quota reset (usually midnight Pacific)
+- Check quota status: https://ai.dev/usage?tab=rate-limit
+- Consider getting new API keys or upgrading to paid tier
+
+### Frontend can't connect to backend
+- Verify `NEXT_PUBLIC_API_BASE_URL` in Vercel points to Railway URL
+- Check Railway backend is running (check logs)
+- Verify CORS settings in backend allow Vercel domain
+
+### 503 errors persisting
+- This is normal - Google's servers are temporarily overloaded
+- System will automatically retry with different keys
+- Wait a few minutes and try again
