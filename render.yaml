@@ -5,12 +5,18 @@ services:
     buildCommand: npm install
     startCommand: node server.js
     envVars:
-      - key: AIzaSyCEgCc2ok1lZ6py4TPQCveEjTL4OOIa1Ag
+      - key: API_KEY
+        value: AIZaSyC9E... 
         sync: false
+
       - key: PORT
         value: 8080
+
       - key: NODE_ENV
         value: production
-      - key: http://localhost:3000
+
+      - key: FRONTEND_URL
+        value: http://localhost:3000
         sync: false
+
 
