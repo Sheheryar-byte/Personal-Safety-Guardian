@@ -16,13 +16,18 @@ class GeminiClient {
       throw new Error('No valid API keys found in GEMINI_API_KEY or GEMINI_API_KEYS');
     }
     
+    // Debug: Log key info (masked for security)
+    console.log(`✅ Initialized GeminiClient with ${this.apiKeys.length} API key(s)`);
+    this.apiKeys.forEach((key, index) => {
+      const masked = key.length > 10 ? `${key.substring(0, 6)}...${key.substring(key.length - 4)}` : '***';
+      console.log(`   Key ${index + 1}: ${masked} (length: ${key.length})`);
+    });
+    
     this.currentKeyIndex = 0;
     this.rateLimitedKeys = new Map(); // Track rate-limited keys with timestamp
     this.quotaExceededKeys = new Set(); // Track keys with quota exceeded (429) - these need daily reset
     this.rateLimitCooldown = 5 * 60 * 1000; // 5 minutes cooldown for 503 overload errors
     this.quotaCooldown = 24 * 60 * 60 * 1000; // 24 hours cooldown for 429 quota errors
-    
-    console.log(`✅ Initialized GeminiClient with ${this.apiKeys.length} API key(s)`);
   }
 
   /**
@@ -124,6 +129,10 @@ class GeminiClient {
       attemptedKeys.add(index);
       
       try {
+        // Debug: Log which key is being used (masked)
+        const maskedKey = key.length > 10 ? `${key.substring(0, 6)}...${key.substring(key.length - 4)}` : '***';
+        console.log(`🔑 Attempting with key ${index + 1}/${this.apiKeys.length}: ${maskedKey}`);
+        
         const genAI = new GoogleGenerativeAI(key);
         const result = await apiCall(genAI);
         
@@ -133,9 +142,15 @@ class GeminiClient {
           console.log(`✅ Key ${index + 1} is working again`);
         }
         
+        console.log(`✅ Request succeeded with key ${index + 1}`);
         return result;
       } catch (error) {
         lastError = error;
+        
+        // Log error details for debugging
+        const errorStatus = error.status || 'unknown';
+        const errorMessage = error.message || 'Unknown error';
+        console.error(`❌ Key ${index + 1} failed: Status ${errorStatus} - ${errorMessage.substring(0, 100)}`);
         
         // Check if it's a rate limit error
         if (this.isRateLimitError(error)) {
@@ -153,6 +168,20 @@ class GeminiClient {
           const delay = Math.min(1000 * Math.pow(2, attempt), 5000);
           await new Promise(resolve => setTimeout(resolve, delay));
           
+          continue; // Try next key
+        } else if (error.status === 400 && (error.message.includes('API key not valid') || error.message.includes('API_KEY_INVALID'))) {
+          // Invalid API key - mark this key as invalid and try next
+          console.error(`🚫 Key ${index + 1} is INVALID (400 Bad Request) - API key not valid. Trying next key...`);
+          this.quotaExceededKeys.add(index); // Mark as unusable
+          
+          // If this is the last key, throw error
+          if (attempt >= maxRetries - 1) {
+            throw new Error(`All API keys are invalid. Please check your GEMINI_API_KEY environment variable in Railway.`);
+          }
+          
+          // Wait a bit before trying next key
+          const delay = Math.min(1000 * Math.pow(2, attempt), 5000);
+          await new Promise(resolve => setTimeout(resolve, delay));
           continue; // Try next key
         } else {
           // Non-rate-limit error (auth, invalid request, etc.) - don't retry
