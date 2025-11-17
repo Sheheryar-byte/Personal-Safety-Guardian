@@ -5,12 +5,12 @@ services:
     buildCommand: npm install
     startCommand: node server.js
     envVars:
-      - key: GEMINI_API_KEY
+      - key: AIzaSyCEgCc2ok1lZ6py4TPQCveEjTL4OOIa1Ag
         sync: false
       - key: PORT
         value: 8080
       - key: NODE_ENV
         value: production
-      - key: FRONTEND_URL
+      - key: http://localhost:3000
         sync: false
 
