@@ -57,7 +57,79 @@ app.use('/api/safe-route', safeRouteRoute);
 
 // Health check endpoint
 app.get('/api/health', (req, res) => {
-  res.json({ status: 'ok', message: 'AI Personal Safety Guardian API is running' });
+  const geminiKey = process.env.GEMINI_API_KEY || process.env.GEMINI_API_KEYS;
+  const keyCount = geminiKey ? geminiKey.split(',').filter(k => k.trim().length > 0).length : 0;
+  
+  res.json({ 
+    status: 'ok', 
+    message: 'AI Personal Safety Guardian API is running',
+    environment: {
+      port: PORT,
+      nodeEnv: process.env.NODE_ENV || 'development',
+      geminiKeysConfigured: keyCount,
+      geminiKeySet: !!geminiKey
+    }
+  });
+});
+
+// Test endpoint to verify API keys
+app.get('/api/test-keys', async (req, res) => {
+  try {
+    const { GoogleGenerativeAI } = require('@google/generative-ai');
+    const geminiKey = process.env.GEMINI_API_KEY || process.env.GEMINI_API_KEYS;
+    
+    if (!geminiKey) {
+      return res.status(500).json({
+        error: 'GEMINI_API_KEY not set',
+        keysFound: 0
+      });
+    }
+    
+    const keys = geminiKey.split(',').map(k => k.trim()).filter(k => k.length > 0);
+    const results = [];
+    
+    for (let i = 0; i < Math.min(keys.length, 6); i++) {
+      const key = keys[i];
+      const masked = key.length > 10 ? `${key.substring(0, 6)}...${key.substring(key.length - 4)}` : '***';
+      
+      try {
+        const genAI = new GoogleGenerativeAI(key);
+        const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
+        const result = await model.generateContent('Say "test"');
+        const response = await result.response;
+        const text = response.text();
+        
+        results.push({
+          keyIndex: i + 1,
+          keyMasked: masked,
+          status: 'valid',
+          testResponse: text.substring(0, 50)
+        });
+      } catch (error) {
+        results.push({
+          keyIndex: i + 1,
+          keyMasked: masked,
+          status: 'invalid',
+          error: error.message?.substring(0, 100) || 'Unknown error',
+          errorStatus: error.status
+        });
+      }
+    }
+    
+    const validCount = results.filter(r => r.status === 'valid').length;
+    
+    res.json({
+      totalKeys: keys.length,
+      validKeys: validCount,
+      invalidKeys: results.length - validCount,
+      results: results
+    });
+  } catch (error) {
+    res.status(500).json({
+      error: error.message,
+      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
+    });
+  }
 });
 
 // Error handling middleware

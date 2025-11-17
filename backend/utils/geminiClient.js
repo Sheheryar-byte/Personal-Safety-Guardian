@@ -4,23 +4,60 @@ const path = require('path');
 
 class GeminiClient {
   constructor() {
-    // Support multiple API keys (comma-separated) or single key
-    const apiKeysEnv = process.env.GEMINI_API_KEY || process.env.GEMINI_API_KEYS;
-    if (!apiKeysEnv) {
-      throw new Error('GEMINI_API_KEY or GEMINI_API_KEYS is not set in environment variables');
+    console.log('🔧 GeminiClient constructor called');
+    
+    // Method 1: Try individual environment variables (GEMINI_API_KEY_1, GEMINI_API_KEY_2, etc.)
+    // This works better with Railway's UI
+    const individualKeys = [];
+    for (let i = 1; i <= 20; i++) { // Support up to 20 keys
+      const key = process.env[`GEMINI_API_KEY_${i}`];
+      if (key && key.trim().length > 0) {
+        individualKeys.push(key.trim());
+      }
     }
     
-    // Parse keys (support comma-separated or single key)
-    this.apiKeys = apiKeysEnv.split(',').map(key => key.trim()).filter(key => key.length > 0);
-    if (this.apiKeys.length === 0) {
-      throw new Error('No valid API keys found in GEMINI_API_KEY or GEMINI_API_KEYS');
+    // Method 2: Try comma-separated in GEMINI_API_KEY (for local .env files)
+    const apiKeysEnv = process.env.GEMINI_API_KEY || process.env.GEMINI_API_KEYS;
+    const commaSeparatedKeys = apiKeysEnv 
+      ? apiKeysEnv.split(',').map(key => key.trim()).filter(key => key.length > 0)
+      : [];
+    
+    // Combine both methods (individual keys take priority, then add comma-separated)
+    // Remove duplicates
+    const allKeys = [...individualKeys];
+    commaSeparatedKeys.forEach(key => {
+      if (!allKeys.includes(key)) {
+        allKeys.push(key);
+      }
+    });
+    
+    console.log(`   Individual keys (GEMINI_API_KEY_1, _2, etc.): ${individualKeys.length}`);
+    console.log(`   Comma-separated keys (GEMINI_API_KEY): ${commaSeparatedKeys.length}`);
+    console.log(`   Total unique keys: ${allKeys.length}`);
+    
+    if (allKeys.length === 0) {
+      console.error('❌ No API keys found!');
+      console.error('   Please set either:');
+      console.error('   - GEMINI_API_KEY_1, GEMINI_API_KEY_2, etc. (for Railway)');
+      console.error('   - OR GEMINI_API_KEY with comma-separated values (for local)');
+      throw new Error('No API keys found. Set GEMINI_API_KEY_1, GEMINI_API_KEY_2, etc. or GEMINI_API_KEY with comma-separated values');
     }
+    
+    this.apiKeys = allKeys;
     
     // Debug: Log key info (masked for security)
     console.log(`✅ Initialized GeminiClient with ${this.apiKeys.length} API key(s)`);
     this.apiKeys.forEach((key, index) => {
       const masked = key.length > 10 ? `${key.substring(0, 6)}...${key.substring(key.length - 4)}` : '***';
       console.log(`   Key ${index + 1}: ${masked} (length: ${key.length})`);
+      
+      // Validate key format (should start with AIza and be ~39 chars)
+      if (!key.startsWith('AIza')) {
+        console.warn(`   ⚠️ Key ${index + 1} doesn't start with 'AIza' - might be invalid`);
+      }
+      if (key.length < 30 || key.length > 50) {
+        console.warn(`   ⚠️ Key ${index + 1} has unusual length (${key.length}) - expected ~39`);
+      }
     });
     
     this.currentKeyIndex = 0;
